@@ -6,12 +6,12 @@ import sqlite3
 
 app = Flask(__name__)
 
-# DB başlat
 def init_db():
     conn = sqlite3.connect('tur_db.sqlite')
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS turlar (id INTEGER PRIMARY KEY, isim TEXT, tarih TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS giderler (id INTEGER PRIMARY KEY, tur_id INTEGER, tip TEXT, fiyat REAL)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS odalar (id INTEGER PRIMARY KEY, tur_id INTEGER, oda_tipi TEXT, yetiskin INTEGER, cocuk INTEGER, bebek INTEGER)''')
     conn.commit()
     conn.close()
 
@@ -51,7 +51,7 @@ def get_exchange_rates(base='USD'):
 
 KUR = get_exchange_rates()
 
-def convert_currency(miktar, from_birim, to_birimi):
+def convert_currency(miktar, from_birim, to_birim):
     if from_birim == to_birim:
         return miktar
     if from_birim == 'TRY':
@@ -71,46 +71,49 @@ def convert_currency(miktar, from_birim, to_birimi):
             return miktar / KUR['EUR_USD']
     return miktar
 
-def hesapla_breakdown(yetiskin, cocuk, bebek, oda_tipi='double', sabit_giderler=[], ek_oda_sayisi=0, hedef_para_birimi='TRY'):
-    otel = AGENTIS_OTEL
-    pp_fiyat = otel['fiyatlar'].get(oda_tipi, otel['fiyatlar']['double'])
-    
-    toplam_kisi = yetiskin + cocuk + bebek
-    otomatik_oda_sayisi = -(-toplam_kisi // otel['capacity'])
-    toplam_oda_sayisi = otomatik_oda_sayisi + ek_oda_sayisi
-    
-    otel_yetiskin = yetiskin * pp_fiyat
-    otel_cocuk = cocuk * otel['child']
-    otel_bebek = bebek * otel['baby']
-    otel_ek_oda = ek_oda_sayisi * pp_fiyat
-    otel_toplam_eur = otel_yetiskin + otel_cocuk + otel_bebek + otel_ek_oda
-    otel_toplam_hedef = convert_currency(otel_toplam_eur, 'EUR', hedef_para_birimi)
-    
+def hesapla_oda_breakdown(odalar_list, sabit_giderler, hedef_para_birimi='TRY'):
+    # Sabit toplam
     sabit_toplam_try = sum(gider['fiyat'] for gider in sabit_giderler)
     sabit_toplam_hedef = convert_currency(sabit_toplam_try, SABIT_VARSAYILAN_BIRIM, hedef_para_birimi)
     
-    sabit_kisi_basi_hedef = sabit_toplam_hedef / toplam_kisi if toplam_kisi > 0 else 0
+    # Toplam kişi hesapla
+    toplam_kisi = sum(oda['yetiskin'] + oda['cocuk'] + oda['bebek'] for oda in odalar_list)
+    if toplam_kisi == 0:
+        return {'hata': 'Kişi sayısı 0 olamaz'}
     
-    sabit_breakdown = {}
-    for gider in sabit_giderler:
-        kisi_basi_try = gider['fiyat'] / toplam_kisi if toplam_kisi > 0 else 0
-        kisi_basi_hedef = convert_currency(kisi_basi_try, SABIT_VARSAYILAN_BIRIM, hedef_para_birimi)
-        sabit_breakdown[gider['tip']] = {'toplam': convert_currency(gider['fiyat'], SABIT_VARSAYILAN_BIRIM, hedef_para_birimi), 'kisi_basi': round(kisi_basi_hedef, 2)}
+    sabit_kisi_basi = sabit_toplam_hedef / toplam_kisi
     
-    genel_toplam_hedef = round(otel_toplam_hedef + sabit_toplam_hedef, 2)
+    oda_breakdowns = []
+    genel_toplam = 0
+    for oda in odalar_list:
+        oda_kisi = oda['yetiskin'] + oda['cocuk'] + oda['bebek']
+        oda_sabit_ek = oda_kisi * sabit_kisi_basi
+        
+        pp_fiyat = AGENTIS_OTEL['fiyatlar'].get(oda['oda_tipi'], AGENTIS_OTEL['fiyatlar']['double'])
+        otel_yetiskin = oda['yetiskin'] * pp_fiyat
+        otel_cocuk = oda['cocuk'] * AGENTIS_OTEL['child']
+        otel_bebek = oda['bebek'] * AGENTIS_OTEL['baby']
+        otel_toplam_eur = otel_yetiskin + otel_cocuk + otel_bebek
+        otel_toplam_hedef = convert_currency(otel_toplam_eur, 'EUR', hedef_para_birimi)
+        
+        oda_toplam = round(otel_toplam_hedef + oda_sabit_ek, 2)
+        genel_toplam += oda_toplam
+        
+        oda_breakdowns.append({
+            'oda_num': len(oda_breakdowns) + 1,
+            'oda_tipi': oda['oda_tipi'],
+            'kişi_dağılım': f"{oda['yetiskin']}Y + {oda['cocuk']}Ç + {oda['bebek']}B",
+            'otel_fiyat': round(otel_toplam_hedef, 2),
+            'sabit_ek': round(oda_sabit_ek, 2),
+            'toplam': oda_toplam
+        })
     
     return {
-        'toplam_oda_sayisi': toplam_oda_sayisi,
-        'otomatik_oda_sayisi': otomatik_oda_sayisi,
-        'ek_oda_sayisi': ek_oda_sayisi,
-        'otel_toplam': round(otel_toplam_hedef, 2),
-        'sabitler': sabit_breakdown,
-        'sabit_toplam': round(sabit_toplam_hedef, 2),
-        'sabit_kisi_basi': round(sabit_kisi_basi_hedef, 2),
-        'genel_toplam': genel_toplam_hedef,
-        'toplam_kisi': toplam_kisi,
+        'oda_breakdowns': oda_breakdowns,
+        'genel_toplam': genel_toplam,
         'para_birimi': hedef_para_birimi,
-        'kur_bilgisi': KUR
+        'toplam_kisi': toplam_kisi,
+        'sabit_kisi_basi': round(sabit_kisi_basi, 2)
     }
 
 def create_xml(breakdown, tur_adi='Kapadokya Turu'):
@@ -123,42 +126,52 @@ def create_xml(breakdown, tur_adi='Kapadokya Turu'):
     ET.SubElement(tour, 'total_persons').text = str(breakdown['toplam_kisi'])
     
     persons = ET.SubElement(tour, 'persons')
-    persons.text = f"{breakdown.get('yetiskin',3)} yetiskin + {breakdown.get('cocuk',1)} cocuk + {breakdown.get('bebek',0)} bebek (ücretsiz)"
+    persons.text = f"Toplam {breakdown['toplam_kisi']} kişi (oda bazlı)"
     
     breakdown_el = ET.SubElement(tour, 'breakdown')
-    ET.SubElement(breakdown_el, 'component', type='otel').text = f"{breakdown['otel_toplam']} {breakdown['para_birimi']} ({breakdown['toplam_oda_sayisi']} oda, {breakdown['ek_oda_sayisi']} ek)"
+    for oda in breakdown['oda_breakdowns']:
+        oda_el = ET.SubElement(breakdown_el, 'oda')
+        oda_el.set('num', str(oda['oda_num']))
+        oda_el.set('tip', oda['oda_tipi'])
+        ET.SubElement(oda_el, 'kisi_dagilim').text = oda['kişi_dağılım']
+        ET.SubElement(oda_el, 'otel_fiyat').text = str(oda['otel_fiyat'])
+        ET.SubElement(oda_el, 'sabit_ek').text = str(oda['sabit_ek'])
+        ET.SubElement(oda_el, 'toplam').text = str(oda['toplam'])
     
-    for tip, detay in breakdown['sabitler'].items():
-        ET.SubElement(breakdown_el, 'component', type=tip).text = f"{detay['toplam']} {breakdown['para_birimi']} (kişi başı {detay['kisi_basi']} {breakdown['para_birimi']})"
+    ET.SubElement(breakdown_el, 'sabit_kisi_basi').text = str(breakdown['sabit_kisi_basi'])
     
     kur_el = ET.SubElement(tour, 'exchange_rates')
-    for k, v in breakdown['kur_bilgisi'].items():
+    for k, v in KUR.items():
         ET.SubElement(kur_el, 'rate', pair=k).text = str(v)
     
     rough_string = ET.tostring(root, 'unicode')
     reparsed = minidom.parseString(rough_string)
     return reparsed.toprettyxml(indent="  ")
 
-@app.route('/hesapla-paket-xml', methods=['POST'])
-def hesapla_xml():
+@app.route('/calculate-oda-fiyatlari', methods=['POST'])
+def calculate_oda_fiyatlari():
     global KUR
     KUR = get_exchange_rates()
     
     data = request.json
-    yetiskin = data.get('yetiskin', 3)
-    cocuk = data.get('cocuk', 1)
-    bebek = data.get('bebek', 0)
-    oda_tipi = data.get('oda_tipi', 'double')
-    sabit_giderler = data.get('sabit_giderler', [{'tip': 'arac', 'fiyat': 5000}, {'tip': 'yat', 'fiyat': 2000}])
-    ek_oda_sayisi = data.get('ek_oda_sayisi', 0)
+    tur_id = data.get('tur_id')  # Tur ID'si (DB'den giderleri çek)
+    odalar_list = data.get('odalar', [])  # [{'oda_tipi': 'double', 'yetiskin': 2, 'cocuk': 0, 'bebek': 0}, ...]
     hedef_para_birimi = data.get('hedef_para_birimi', 'TRY')
     tur_adi = data.get('tur_adi', 'Vito Kapadokya Turu')
     
-    breakdown = hesapla_breakdown(yetiskin, cocuk, bebek, oda_tipi, sabit_giderler, ek_oda_sayisi, hedef_para_birimi)
-    breakdown['yetiskin'] = yetiskin
-    breakdown['cocuk'] = cocuk
-    breakdown['bebek'] = bebek
+    # DB'den tur'un sabit giderlerini çek
+    conn = sqlite3.connect('tur_db.sqlite')
+    c = conn.cursor()
+    c.execute("SELECT tip, fiyat FROM giderler WHERE tur_id = ?", (tur_id,))
+    db_giderler = [{'tip': row[0], 'fiyat': row[1]} for row in c.fetchall()]
+    conn.close()
     
+    sabit_giderler = db_giderler or [{'tip': 'arac', 'fiyat': 5000}, {'tip': 'yat', 'fiyat': 2000}]  # Varsayılan
+    
+    if not odalar_list:
+        return {'hata': 'Oda listesi zorunlu'}
+    
+    breakdown = hesapla_oda_breakdown(odalar_list, sabit_giderler, hedef_para_birimi)
     xml_output = create_xml(breakdown, tur_adi)
     
     return Response(xml_output, mimetype='application/xml')
@@ -176,8 +189,8 @@ def admin_panel():
     <html>
     <head><title>Admin Tur Yönetimi</title></head>
     <body>
-        <h1>Tur Yönetimi (Agentis Entegrasyonu)</h1>
-        <h2>1. Tur Seç (Agentis'ten Çekilenler)</h2>
+        <h1>Tur Yönetimi (Oda Bazlı Sabit Bölüşüm)</h1>
+        <h2>1. Tur Seç ve Sabit Gider Ekle</h2>
         <select id="turSelect">
             <option value="">Yeni Tur Ekle</option>
             {% for tur in turlar %}
@@ -185,49 +198,25 @@ def admin_panel():
             {% endfor %}
         </select>
         <button onclick="addTur()">Yeni Tur Ekle</button>
-        <button onclick="fetchAgentis()">Agentis'ten Çek</button>
-        
-        <h2>2. Giderler Gir (Araç, Rehber, Yat, Transfer)</h2>
         <div id="giderForm">
             <input type="text" id="giderTip" placeholder="Tip (arac, rehber, yat, transfer)">
-            <input type="number" id="giderFiyat" placeholder="Fiyat (TL)">
-            <button onclick="addGider()">Ekle</button>
+            <input type="number" id="giderFiyat" placeholder="Fiyat (TL, toplam)">
+            <button onclick="addGider()">Ekle (Tur'a Bağla)</button>
         </div>
         <ul id="giderList"></ul>
         
-        <h2>3. Hesapla ve Satışa Hazırla</h2>
-        <input type="number" id="yetiskin" placeholder="Yetişkin" value="3">
-        <input type="number" id="cocuk" placeholder="Çocuk" value="1">
-        <input type="number" id="bebek" placeholder="Bebek" value="0">
-        <select id="odaTipi">
-            <option value="double">Double</option>
-            <option value="single">Single</option>
-            <option value="triple">Triple</option>
-        </select>
-        <input type="number" id="ekOda" placeholder="Ek Oda" value="0">
-        <select id="paraBirimi">
-            <option value="TRY">TL</option>
-            <option value="EUR">EUR</option>
-            <option value="USD">USD</option>
-        </select>
-        <button onclick="hesapla()">Hesapla</button>
+        <h2>2. Satış Simülasyonu (Oda Dağılımı Gir)</h2>
+        <div id="odaForm">
+            <button onclick="addOda()">Yeni Oda Ekle</button>
+            <div id="odalar"></div>
+        </div>
+        <button onclick="hesaplaOda()">Hesapla Oda Fiyatları</button>
         <div id="sonuc"></div>
         
         <script>
             let giderler = [];
-            let agentisTurlar = [];
-            
-            function fetchAgentis() {
-                fetch('/fetch-agentis-turs').then(r => r.json()).then(data => {
-                    agentisTurlar = data.turlar;
-                    let options = '';
-                    agentisTurlar.forEach(tur => {
-                        options += `<option value="${tur.id}">${tur.isim} - ${tur.tarih}</option>`;
-                    });
-                    document.getElementById('turSelect').innerHTML = `<option value="">Agentis Turları</option>` + options;
-                    alert(data.mesaj);
-                });
-            }
+            let odalar = [];
+            let turId = null;
             
             function addTur() {
                 const isim = prompt("Tur İsmi:");
@@ -242,34 +231,83 @@ def admin_panel():
                     });
                 }
             }
+            
             function addGider() {
                 const tip = document.getElementById('giderTip').value;
                 const fiyat = parseFloat(document.getElementById('giderFiyat').value);
-                if (tip && fiyat) {
+                if (tip && fiyat && turId) {
                     fetch('/add-gider', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({tip: tip, fiyat: fiyat})
+                        body: JSON.stringify({tip: tip, fiyat: fiyat, tur_id: turId})
                     }).then(r => r.json()).then(data => {
                         giderler.push({tip: tip, fiyat: fiyat});
-                        document.getElementById('giderList').innerHTML += `<li>${tip}: ${fiyat} TL</li>`;
+                        document.getElementById('giderList').innerHTML += `<li>${tip}: ${fiyat} TL (Toplam)</li>`;
                         document.getElementById('giderTip').value = '';
                         document.getElementById('giderFiyat').value = '';
                     });
+                } else {
+                    alert('Tur seç ve fiyat gir!');
                 }
             }
-            function hesapla() {
+            
+            document.getElementById('turSelect').addEventListener('change', function() {
+                turId = this.value;
+                if (turId) {
+                    // Giderleri yükle (DB'den)
+                    fetch(`/load-giderler/${turId}`).then(r => r.json()).then(data => {
+                        giderler = data.giderler;
+                        let list = '';
+                        giderler.forEach(g => list += `<li>${g.tip}: ${g.fiyat} TL</li>`);
+                        document.getElementById('giderList').innerHTML = list;
+                    });
+                }
+            });
+            
+            function addOda() {
+                const odaNum = odalar.length + 1;
+                const odaHtml = `
+                    <div id="oda${odaNum}">
+                        Oda ${odaNum}: <select id="odaTipi${odaNum}">
+                            <option value="double">Double</option>
+                            <option value="single">Single</option>
+                            <option value="triple">Triple</option>
+                        </select>
+                        Yetişkin: <input type="number" id="yetiskin${odaNum}" value="2">
+                        Çocuk: <input type="number" id="cocuk${odaNum}" value="0">
+                        Bebek: <input type="number" id="bebek${odaNum}" value="0">
+                        <button onclick="removeOda(${odaNum})">Sil</button>
+                    </div>
+                `;
+                document.getElementById('odalar').innerHTML += odaHtml;
+                odalar.push(odaNum);
+            }
+            
+            function removeOda(num) {
+                document.getElementById('oda' + num).remove();
+                odalar = odalar.filter(n => n != num);
+            }
+            
+            function hesaplaOda() {
+                if (!turId || odalar.length == 0) {
+                    alert('Tur seç ve en az 1 oda ekle!');
+                    return;
+                }
+                const odalar_list = [];
+                odalar.forEach(num => {
+                    odalar_list.push({
+                        oda_tipi: document.getElementById('odaTipi' + num).value,
+                        yetiskin: parseInt(document.getElementById('yetiskin' + num).value),
+                        cocuk: parseInt(document.getElementById('cocuk' + num).value),
+                        bebek: parseInt(document.getElementById('bebek' + num).value)
+                    });
+                });
                 const data = {
-                    yetiskin: parseInt(document.getElementById('yetiskin').value),
-                    cocuk: parseInt(document.getElementById('cocuk').value),
-                    bebek: parseInt(document.getElementById('bebek').value),
-                    oda_tipi: document.getElementById('odaTipi').value,
-                    sabit_giderler: giderler,
-                    ek_oda_sayisi: parseInt(document.getElementById('ekOda').value),
-                    hedef_para_birimi: document.getElementById('paraBirimi').value,
-                    tur_adi: document.getElementById('turSelect').value || 'Yeni Tur'
+                    tur_id: turId,
+                    odalar: odalar_list,
+                    hedef_para_birimi: 'TRY'
                 };
-                fetch('/hesapla-paket-xml', {
+                fetch('/calculate-oda-fiyatlari', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify(data)
@@ -277,14 +315,40 @@ def admin_panel():
                     document.getElementById('sonuc').innerHTML = `<pre>${xml}</pre><button onclick="satisHazir()">Satışa Hazırla</button>`;
                 });
             }
+            
             function satisHazir() {
-                alert('XML Agentis\'e gönderildi – satış hazır!');
+                alert('Oda fiyatları Agentis\'e entegre edildi – satış hazır!');
             }
         </script>
     </body>
     </html>
     """
     return render_template_string(html_template, turlar=turlar)
+
+@app.route('/load-giderler/<int:tur_id>', methods=['GET'])
+def load_giderler(tur_id):
+    conn = sqlite3.connect('tur_db.sqlite')
+    c = conn.cursor()
+    c.execute("SELECT tip, fiyat FROM giderler WHERE tur_id = ?", (tur_id,))
+    giderler = [{'tip': row[0], 'fiyat': row[1]} for row in c.fetchall()]
+    conn.close()
+    return {'giderler': giderler}
+
+@app.route('/add-gider', methods=['POST'])
+def add_gider():
+    data = request.json
+    tip = data.get('tip')
+    fiyat = data.get('fiyat', 0)
+    tur_id = data.get('tur_id')
+    if tip and fiyat and tur_id:
+        conn = sqlite3.connect('tur_db.sqlite')
+        c = conn.cursor()
+        c.execute("INSERT INTO giderler (tur_id, tip, fiyat) VALUES (?, ?, ?)", (tur_id, tip, fiyat))
+        conn.commit()
+        conn.close()
+        print(f"Yeni gider eklendi: {tip} - {fiyat} TL (Tur ID: {tur_id})")
+        return {'status': 'eklendi', 'tip': tip, 'fiyat': fiyat}
+    return {'status': 'hata', 'mesaj': 'Tip, fiyat ve tur_id zorunlu'}
 
 @app.route('/add-tur', methods=['POST'])
 def add_tur():
@@ -300,50 +364,37 @@ def add_tur():
         return {'status': 'eklendi', 'isim': isim, 'tarih': tarih}
     return {'status': 'hata', 'mesaj': 'İsim ve tarih zorunlu'}
 
-@app.route('/add-gider', methods=['POST'])
-def add_gider():
-    data = request.json
-    tip = data.get('tip')
-    fiyat = data.get('fiyat', 0)
-    print(f"Yeni gider eklendi: {tip} - {fiyat} TL")
-    return {'status': 'eklendi', 'tip': tip, 'fiyat': fiyat}
-
 @app.route('/fetch-agentis-turs', methods=['GET'])
 def fetch_agentis_turs():
-    # Gerçekte Agentis API'sini çağır (örnek: requests.get('https://app.agentis.com.tr/api/turs', auth=('key', 'secret')))
-    # Şimdilik simüle
+    # Gerçek Agentis API'si geldiğinde burayı güncelle
     simule_turlar = [
         {'id': 1, 'isim': 'Kapadokya Turu 2 Gün', 'tarih': '01/11/2025'},
         {'id': 2, 'isim': 'İstanbul Turu Vito', 'tarih': '15/11/2025'},
         {'id': 3, 'isim': 'Sprinter Antalya', 'tarih': '20/11/2025'}
     ]
-    return {'turlar': simule_turlar, 'mesaj': 'Agentis entegrasyonu hazır – gerçek API geldiğinde güncelle'}
+    return {'turlar': simule_turlar, 'mesaj': 'Agentis simüle – gerçek API için güncelle'}
 
 @app.route('/integrate-tur', methods=['POST'])
 def integrate_tur():
     data = request.json
-    tur_id = data.get('tur_id')  # Agentis tur ID'si
-    yetiskin = data.get('yetiskin', 3)
-    cocuk = data.get('cocuk', 1)
-    bebek = data.get('bebek', 0)
-    oda_tipi = data.get('oda_tipi', 'double')
-    sabit_giderler = data.get('sabit_giderler', [])  # Senin giderlerin
-    ek_oda_sayisi = data.get('ek_oda_sayisi', 0)
+    tur_id = data.get('tur_id')
+    odalar_list = data.get('odalar', [])
+    sabit_giderler = data.get('sabit_giderler', [])
     hedef_para_birimi = data.get('hedef_para_birimi', 'TRY')
     
-    # DB'ye tur/gider kaydet
+    # DB'ye kaydet (tur_id ile)
     conn = sqlite3.connect('tur_db.sqlite')
     c = conn.cursor()
-    c.execute("INSERT INTO turlar (isim, tarih) VALUES (?, ?)", ('Agentis Tur ' + str(tur_id), 'Agentis Tarihi'))  # Gerçek isim/tarih Agentis'ten
-    tur_id_db = c.lastrowid
+    for oda in odalar_list:
+        c.execute("INSERT INTO odalar (tur_id, oda_tipi, yetiskin, cocuk, bebek) VALUES (?, ?, ?, ?, ?)", 
+                  (tur_id, oda['oda_tipi'], oda['yetiskin'], oda['cocuk'], oda['bebek']))
     for gider in sabit_giderler:
-        c.execute("INSERT INTO giderler (tur_id, tip, fiyat) VALUES (?, ?, ?)", (tur_id_db, gider['tip'], gider['fiyat']))
+        c.execute("INSERT INTO giderler (tur_id, tip, fiyat) VALUES (?, ?, ?)", (tur_id, gider['tip'], gider['fiyat']))
     conn.commit()
     conn.close()
     
-    # Hesapla
-    breakdown = hesapla_breakdown(yetiskin, cocuk, bebek, oda_tipi, sabit_giderler, ek_oda_sayisi, hedef_para_birimi)
-    xml_output = create_xml(breakdown, 'Agentis Entegre Tur')
+    breakdown = hesapla_oda_breakdown(odalar_list, sabit_giderler, hedef_para_birimi)
+    xml_output = create_xml(breakdown, 'Entegre Tur')
     
     return Response(xml_output, mimetype='application/xml')
 
