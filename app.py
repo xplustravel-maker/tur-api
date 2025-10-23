@@ -1,8 +1,8 @@
 from flask import Flask, request, Response, render_template_string
-import xml.etree.ElementTree as ET
+import os xml.etree.ElementTree as ET
 from xml.dom import minidom
-import requests
-import sqlite3
+import os requests
+import os sqlite3
 
 app = Flask(__name__)
 
@@ -399,4 +399,5 @@ def integrate_tur():
     return Response(xml_output, mimetype='application/xml')
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port, debug=True)
