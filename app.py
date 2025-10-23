@@ -73,11 +73,9 @@ def convert_currency(miktar, from_birim, to_birim):
     return miktar
 
 def hesapla_oda_breakdown(odalar_list, sabit_giderler, hedef_para_birimi='TRY'):
-    # Sabit toplam
     sabit_toplam_try = sum(gider['fiyat'] for gider in sabit_giderler)
     sabit_toplam_hedef = convert_currency(sabit_toplam_try, SABIT_VARSAYILAN_BIRIM, hedef_para_birimi)
    
-    # Toplam kişi hesapla
     toplam_kisi = sum(oda['yetiskin'] + oda['cocuk'] + oda['bebek'] for oda in odalar_list)
     if toplam_kisi == 0:
         return {'hata': 'Kişi sayısı 0 olamaz'}
@@ -160,7 +158,6 @@ def calculate_oda_fiyatlari():
     hedef_para_birimi = data.get('hedef_para_birimi', 'TRY')
     tur_adi = data.get('tur_adi', 'Vito Kapadokya Turu')
    
-    # DB'den tur'un sabit giderlerini çek
     conn = sqlite3.connect('tur_db.sqlite')
     c = conn.cursor()
     c.execute("SELECT tip, fiyat FROM giderler WHERE tur_id = ?", (tur_id,))
