@@ -174,6 +174,11 @@ def calculate_oda_fiyatlari():
    
     return Response(xml_output, mimetype='application/xml')
 
+# Alias route for old endpoint
+@app.route('/hesapla-paket-xml', methods=['POST'])
+def hesapla_paket_xml():
+    return calculate_oda_fiyatlari()
+
 @app.route('/admin', methods=['GET'])
 def admin_panel():
     conn = sqlite3.connect('tur_db.sqlite')
@@ -363,7 +368,6 @@ def add_tur():
 
 @app.route('/fetch-agentis-turs', methods=['GET'])
 def fetch_agentis_turs():
-    # Gerçek Agentis API'si geldiğinde burayı güncelle
     simule_turlar = [
         {'id': 1, 'isim': 'Kapadokya Turu 2 Gün', 'tarih': '01/11/2025'},
         {'id': 2, 'isim': 'İstanbul Turu Vito', 'tarih': '15/11/2025'},
@@ -379,7 +383,6 @@ def integrate_tur():
     sabit_giderler = data.get('sabit_giderler', [])
     hedef_para_birimi = data.get('hedef_para_birimi', 'TRY')
    
-    # DB'ye kaydet (tur_id ile)
     conn = sqlite3.connect('tur_db.sqlite')
     c = conn.cursor()
     for oda in odalar_list:
